@@ -1,0 +1,97 @@
+name: warpbuild-screenshot-repro
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  warpbuild:
+    runs-on: warp-macos-latest-arm64-6x
+    timeout-minutes: 15
+    steps:
+      - name: Hardware + GUI session info
+        run: |
+          set +e
+          echo "=== sysctl ==="
+          sysctl -n hw.model hw.ncpu hw.memsize machdep.cpu.brand_string
+          echo "=== sw_vers ==="
+          sw_vers
+          echo "=== gui session ==="
+          launchctl print gui/$(id -u) 2>&1 | head -12
+          echo "=== WindowServer ==="
+          pgrep -l WindowServer
+          echo "=== display ==="
+          /usr/sbin/system_profiler SPDisplaysDataType 2>&1 | head -25
+
+      - name: Launch TextEdit + screenshot
+        run: |
+          mkdir -p /tmp/probe
+          open -a TextEdit
+          sleep 4
+          pgrep -fl TextEdit || echo "TextEdit didn't start"
+          screencapture -x /tmp/probe/desktop.png
+          ls -la /tmp/probe/desktop.png
+          python3 -c "
+          from PIL import Image
+          im = Image.open('/tmp/probe/desktop.png')
+          pixels = list(im.getdata())
+          mean = sum(sum(p[:3]) for p in pixels) / (len(pixels) * 3)
+          print(f'Mean pixel brightness: {mean:.2f}/255 (0=pure black, 255=white)')
+          print(f'Image size: {im.size}')
+          # compute brightness of just the body region (excludes menu bar)
+          w, h = im.size
+          body = im.crop((0, 30, w, h))
+          bp = list(body.getdata())
+          bmean = sum(sum(p[:3]) for p in bp) / (len(bp) * 3)
+          print(f'Body region (excluding menu bar) mean brightness: {bmean:.2f}/255')
+          "
+
+      - name: Compare to GitHub-hosted (control)
+        run: |
+          echo "On GitHub macos-15 / macos-15-xlarge, the same workflow produces"
+          echo "a screenshot showing TextEdit's full window with toolbar + ruler."
+          echo "On WarpBuild warp-macos-latest-arm64-6x, only the menu bar renders;"
+          echo "the body region (window content + desktop) is solid black."
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: screenshot-${{ github.run_id }}
+          path: /tmp/probe/
+
+  github-hosted-control:
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - name: Hardware + GUI session info
+        run: |
+          sysctl -n hw.model hw.ncpu hw.memsize machdep.cpu.brand_string
+          sw_vers
+          launchctl print gui/$(id -u) 2>&1 | head -12
+          pgrep -l WindowServer
+
+      - name: Launch TextEdit + screenshot
+        run: |
+          mkdir -p /tmp/probe
+          open -a TextEdit
+          sleep 4
+          screencapture -x /tmp/probe/desktop.png
+          python3 -c "
+          from PIL import Image
+          im = Image.open('/tmp/probe/desktop.png')
+          pixels = list(im.getdata())
+          mean = sum(sum(p[:3]) for p in pixels) / (len(pixels) * 3)
+          print(f'Mean pixel brightness: {mean:.2f}/255')
+          w, h = im.size
+          body = im.crop((0, 30, w, h))
+          bp = list(body.getdata())
+          bmean = sum(sum(p[:3]) for p in bp) / (len(bp) * 3)
+          print(f'Body region mean brightness: {bmean:.2f}/255')
+          "
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: screenshot-control-${{ github.run_id }}
+          path: /tmp/probe/
