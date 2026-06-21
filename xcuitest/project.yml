@@ -35,6 +35,20 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.cmux.probe.HostAppUITests
         TEST_TARGET_NAME: HostApp
+  # Unit test hosted IN the app (TEST_HOST) — this matches cmux app-host-unit-tests,
+  # which run XCTest inside cmux DEV.app, NOT XCUITest. The host app is the
+  # launched process and can get key-window without a separate runner activation.
+  HostAppUnitTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources: [HostAppUnitTests]
+    dependencies:
+      - target: HostApp
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.cmux.probe.HostAppUnitTests
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/HostApp.app/Contents/MacOS/HostApp"
+        BUNDLE_LOADER: "$(TEST_HOST)"
 schemes:
   HostApp:
     build:
@@ -44,3 +58,11 @@ schemes:
     test:
       targets:
         - HostAppUITests
+  HostAppUnit:
+    build:
+      targets:
+        HostApp: all
+        HostAppUnitTests: [test]
+    test:
+      targets:
+        - HostAppUnitTests

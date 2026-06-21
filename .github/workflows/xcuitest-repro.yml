@@ -61,9 +61,26 @@ jobs:
       - name: Enable automation mode (headless XCTest unblock)
         run: sudo -n automationmodetool enable-automationmode-without-authentication 2>&1 | head -3 || echo "automationmodetool unavailable"
 
-      - name: Run XCUITest (testActivateForeground)
+      - name: "MECHANISM A — host-app UNIT test (matches cmux app-host-unit-tests)"
+        id: unit
+        continue-on-error: true
         run: |
-          set -euo pipefail
+          set -uo pipefail
+          xcodebuild test \
+            -project HostApp.xcodeproj \
+            -scheme HostAppUnit \
+            -destination 'platform=macOS,arch=arm64' \
+            CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- CODE_SIGNING_REQUIRED=NO \
+            2>&1 | tee "$RUNNER_TEMP/unit.log" | \
+            grep -iE 'Test Case|host_is_active|window_is_key|pb_|passed|failed|Running Background|error:|TEST (SUCCEEDED|FAILED)' || true
+          grep -qF "TEST SUCCEEDED" "$RUNNER_TEMP/unit.log" && echo "UNIT_RESULT=PASS" || echo "UNIT_RESULT=FAIL"
+          grep -qF "TEST SUCCEEDED" "$RUNNER_TEMP/unit.log"
+
+      - name: "MECHANISM B — XCUITest .activate() (separate-runner foreground)"
+        id: uitest
+        continue-on-error: true
+        run: |
+          set -uo pipefail
           xcodebuild test \
             -project HostApp.xcodeproj \
             -scheme HostApp \
@@ -71,6 +88,15 @@ jobs:
             -only-testing:HostAppUITests/ProbeUITests/testActivateForeground \
             CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- CODE_SIGNING_REQUIRED=NO \
             2>&1 | tee "$RUNNER_TEMP/xcuitest.log" | \
-            grep -iE 'Test Case|passed|failed|Running Background|activate|error:|TEST (SUCCEEDED|FAILED)' || true
-          # propagate xcodebuild status (fixed-string match; ** is not a regex)
+            grep -iE 'Test Case|Running Background|activate|error:|TEST (SUCCEEDED|FAILED)' || true
+          grep -qF "TEST SUCCEEDED" "$RUNNER_TEMP/xcuitest.log" && echo "UITEST_RESULT=PASS" || echo "UITEST_RESULT=FAIL"
           grep -qF "TEST SUCCEEDED" "$RUNNER_TEMP/xcuitest.log"
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "runner=${{ matrix.runner }}"
+          echo "unit_in_host (app-host analog) = ${{ steps.unit.outcome }}"
+          echo "xcuitest_activate (ui-regressions analog) = ${{ steps.uitest.outcome }}"
+          # Job is green if the app-host analog passes; that is the migration-relevant one.
+          [ "${{ steps.unit.outcome }}" = "success" ]
