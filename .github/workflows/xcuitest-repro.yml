@@ -70,6 +70,6 @@ jobs:
             -only-testing:HostAppUITests/ProbeUITests/testActivateForeground \
             CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- CODE_SIGNING_REQUIRED=NO \
             2>&1 | tee "$RUNNER_TEMP/xcuitest.log" | \
-            grep -iE 'Test Case|passed|failed|Running Background|activate|error:|\*\* TEST' || true
-          # propagate xcodebuild status (pipefail + tee keeps it)
-          grep -q "** TEST SUCCEEDED **" "$RUNNER_TEMP/xcuitest.log"
+            grep -iE 'Test Case|passed|failed|Running Background|activate|error:|TEST (SUCCEEDED|FAILED)' || true
+          # propagate xcodebuild status (fixed-string match; ** is not a regex)
+          grep -qF "TEST SUCCEEDED" "$RUNNER_TEMP/xcuitest.log"

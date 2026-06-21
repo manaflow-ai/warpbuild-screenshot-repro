@@ -10,6 +10,7 @@ settings:
     CODE_SIGNING_ALLOWED: "YES"
     CODE_SIGN_STYLE: Manual
     DEVELOPMENT_TEAM: ""
+    GENERATE_INFOPLIST_FILE: "YES"
 targets:
   HostApp:
     type: application
