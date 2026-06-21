@@ -91,10 +91,41 @@ VD_RC=$?
 echo "appkit_with_vdisplay_exit=$VD_RC"
 kill "$CVD_PID" >/dev/null 2>&1 || true
 
+# ---------------------------------------------------------------------------
+# Most faithful stage: launch the probe as a real .app via LaunchServices
+# (`open`), the way XCUITest launches the app under test. A directly-exec'd
+# binary cannot foreground even on Warp (our known-good runner), so this `open`
+# path is the only check that discriminates Warp (should PASS) from a truly
+# headless runner. Virtual display from the stage above is still active.
+# ---------------------------------------------------------------------------
+echo "=== AppKit activation via LaunchServices (open Probe.app) — the faithful check ==="
+APPDIR="${RUNNER_TEMP:-/tmp}/Probe.app/Contents/MacOS"
+mkdir -p "$APPDIR" "${RUNNER_TEMP:-/tmp}/Probe.app/Contents"
+cp "${RUNNER_TEMP:-/tmp}/gui-probe" "$APPDIR/Probe"
+cat > "${RUNNER_TEMP:-/tmp}/Probe.app/Contents/Info.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>CFBundleExecutable</key><string>Probe</string>
+  <key>CFBundleIdentifier</key><string>com.cmux.gui.probe</string>
+  <key>CFBundleName</key><string>Probe</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>LSUIElement</key><false/>
+</dict></plist>
+PLIST
+OPEN_OUT="${RUNNER_TEMP:-/tmp}/probe-open.out"
+: > "$OPEN_OUT"
+PROBE_OUT="$OPEN_OUT" open -W "${RUNNER_TEMP:-/tmp}/Probe.app" 2>&1 || echo "open returned $?"
+echo "--- Probe.app verdict (via LaunchServices) ---"
+cat "$OPEN_OUT" 2>/dev/null || echo "(no output captured)"
+OPEN_PASS=no
+grep -q "RESULT: PASS" "$OPEN_OUT" 2>/dev/null && OPEN_PASS=yes
+
 echo "=== VERDICT ==="
-echo "bare_activation_pass=$([ $BARE_RC -eq 0 ] && echo yes || echo no)"
+echo "bare_activation_pass=$([ $BARE_RC -eq 0 ] && echo yes || echo no)   (direct exec; fails even on Warp - informational)"
 echo "vdisplay_created=$([ -s "$IDP" ] && echo yes || echo no)"
-echo "activation_with_vdisplay_pass=$([ $VD_RC -eq 0 ] && echo yes || echo no)"
-# Job is GREEN only if the runner can run our real flow: activation works after
-# a virtual display is created (the bare check is informational).
-exit $VD_RC
+echo "activation_direct_with_vdisplay_pass=$([ $VD_RC -eq 0 ] && echo yes || echo no)   (direct exec - informational)"
+echo "activation_launchservices_pass=$OPEN_PASS   (THE faithful discriminator: Warp should be yes)"
+# Job is GREEN only if a LaunchServices-launched GUI app can foreground on the
+# virtual display - the closest proxy to XCUITest .activate() succeeding.
+[ "$OPEN_PASS" = "yes" ]

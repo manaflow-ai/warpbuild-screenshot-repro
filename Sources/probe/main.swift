@@ -15,6 +15,15 @@ import Foundation
 
 func line(_ s: String) {
     FileHandle.standardOutput.write(Data((s + "\n").utf8))
+    // When launched as a .app via LaunchServices (`open`), stdout is detached,
+    // so also append to PROBE_OUT for the shell to read back.
+    if let out = ProcessInfo.processInfo.environment["PROBE_OUT"] {
+        if let h = FileHandle(forWritingAtPath: out) {
+            h.seekToEndOfFile(); h.write(Data((s + "\n").utf8)); try? h.close()
+        } else {
+            try? (s + "\n").data(using: .utf8)?.write(to: URL(fileURLWithPath: out))
+        }
+    }
 }
 
 // Hard watchdog: if we cannot even reach a verdict (e.g. there is no
