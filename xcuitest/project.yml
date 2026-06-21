@@ -1,0 +1,45 @@
+name: HostApp
+options:
+  bundleIdPrefix: com.cmux.probe
+  deploymentTarget:
+    macOS: "13.0"
+settings:
+  base:
+    CODE_SIGN_IDENTITY: "-"
+    CODE_SIGNING_REQUIRED: "NO"
+    CODE_SIGNING_ALLOWED: "YES"
+    CODE_SIGN_STYLE: Manual
+    DEVELOPMENT_TEAM: ""
+targets:
+  HostApp:
+    type: application
+    platform: macOS
+    sources: [HostApp]
+    info:
+      path: HostApp/Info.plist
+      properties:
+        CFBundleName: HostApp
+        LSUIElement: false
+        LSMinimumSystemVersion: "13.0"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.cmux.probe.HostApp
+  HostAppUITests:
+    type: bundle.ui-testing
+    platform: macOS
+    sources: [HostAppUITests]
+    dependencies:
+      - target: HostApp
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.cmux.probe.HostAppUITests
+        TEST_TARGET_NAME: HostApp
+schemes:
+  HostApp:
+    build:
+      targets:
+        HostApp: all
+        HostAppUITests: [test]
+    test:
+      targets:
+        - HostAppUITests

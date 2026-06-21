@@ -1,0 +1,75 @@
+name: xcuitest-repro
+
+# Faithful GUI-session validation: a REAL XCUITest (testmanagerd-brokered launch
+# + .activate()) is the only check that passes on Warp (our known-good runner)
+# and therefore the only one that can tell Warp apart from a headless managed
+# runner. Synthetic AppKit probes fail even on Warp, so they cannot answer
+# "does our GUI CI work here?". This does.
+#   Expected if a runner can host our GUI suite: testActivateForeground PASS.
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'xcuitest/**'
+      - '.github/workflows/xcuitest-repro.yml'
+      - 'create-virtual-display.m'
+
+jobs:
+  uitest:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner:
+          - blacksmith-6vcpu-macos-15
+          - blacksmith-6vcpu-macos-26
+          - warp-macos-latest-arm64-6x
+          - macos-15
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: xcuitest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Environment
+        run: |
+          set +e
+          echo "runner_label=${{ matrix.runner }}  runner_name=${RUNNER_NAME:-?}"
+          sw_vers; xcodebuild -version
+          echo "console_user=$(stat -f %Su /dev/console)"
+
+      - name: Install xcodegen + generate project
+        run: |
+          set -euo pipefail
+          brew list xcodegen >/dev/null 2>&1 || brew install xcodegen
+          xcodegen generate
+          ls -la HostApp.xcodeproj
+
+      - name: Create virtual display (mirror cmux ci.yml)
+        run: |
+          set -uo pipefail
+          HELPER="$RUNNER_TEMP/cvd"; READY="$RUNNER_TEMP/cvd.ready"; IDP="$RUNNER_TEMP/cvd.id"; LOG="$RUNNER_TEMP/cvd.log"
+          clang -framework Foundation -framework CoreGraphics -o "$HELPER" ../create-virtual-display.m
+          "$HELPER" --ready-path "$READY" --display-id-path "$IDP" >"$LOG" 2>&1 &
+          echo "CVD_PID=$!" >> "$GITHUB_ENV"
+          for _ in $(seq 1 100); do { [ -s "$READY" ] && [ -s "$IDP" ]; } && break; sleep 0.1; done
+          cat "$LOG" || true
+          [ -s "$IDP" ] && echo "virtual_display=created id=$(cat "$IDP")" || echo "virtual_display=FAILED"
+
+      - name: Enable automation mode (headless XCTest unblock)
+        run: sudo -n automationmodetool enable-automationmode-without-authentication 2>&1 | head -3 || echo "automationmodetool unavailable"
+
+      - name: Run XCUITest (testActivateForeground)
+        run: |
+          set -euo pipefail
+          xcodebuild test \
+            -project HostApp.xcodeproj \
+            -scheme HostApp \
+            -destination 'platform=macOS,arch=arm64' \
+            -only-testing:HostAppUITests/ProbeUITests/testActivateForeground \
+            CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- CODE_SIGNING_REQUIRED=NO \
+            2>&1 | tee "$RUNNER_TEMP/xcuitest.log" | \
+            grep -iE 'Test Case|passed|failed|Running Background|activate|error:|\*\* TEST' || true
+          # propagate xcodebuild status (pipefail + tee keeps it)
+          grep -q "** TEST SUCCEEDED **" "$RUNNER_TEMP/xcuitest.log"
