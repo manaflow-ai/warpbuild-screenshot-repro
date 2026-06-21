@@ -1,0 +1,31 @@
+name: blacksmith-gui-probe
+
+# Validate whether managed macOS runners run inside a logged-in Aqua/WindowServer
+# GUI session (required for our XCUITest + ~100 activation-dependent unit tests).
+# Same gui-probe.sh on every label; only runs-on differs.
+#   Expected: warp + macos-15 PASS; blacksmith = the question under test.
+on:
+  workflow_dispatch:
+  push:
+
+jobs:
+  probe:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner:
+          - blacksmith-6vcpu-macos-15
+          - blacksmith-6vcpu-macos-26
+          - warp-macos-latest-arm64-6x
+          - macos-15
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - name: gui-probe (${{ matrix.runner }})
+        run: bash gui-probe.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: screenshot-${{ github.run_id }}-${{ strategy.job-index }}
+          path: /tmp/probe/
