@@ -50,9 +50,51 @@ print(f'image size: {im.size}')
 PY
 fi
 
-echo "=== AppKit foreground activation probe (the decisive XCUITest-relevant check) ==="
+echo "=== AppKit foreground activation probe — BARE (no virtual display) ==="
 swiftc -O Sources/probe/main.swift -o "${RUNNER_TEMP:-/tmp}/gui-probe"
 "${RUNNER_TEMP:-/tmp}/gui-probe"
-APPKIT_RC=$?
-echo "appkit_probe_exit=$APPKIT_RC (0=PASS foreground GUI session, non-zero=FAIL/headless)"
-exit $APPKIT_RC
+BARE_RC=$?
+echo "appkit_bare_exit=$BARE_RC"
+
+# ---------------------------------------------------------------------------
+# Decisive stage: replicate what the REAL cmux display jobs do. They create a
+# CGVirtualDisplay first (scripts/create-virtual-display.m) and only then run
+# XCUITest. Warp passes the real jobs despite failing the BARE probe precisely
+# because of this step, so the virtual-display retry is the fair predictor of
+# whether our CI jobs can run on a given runner.
+# ---------------------------------------------------------------------------
+echo "=== create CGVirtualDisplay (mirror of ci.yml 'Create virtual display') ==="
+HELPER="${RUNNER_TEMP:-/tmp}/cvd"
+READY="${RUNNER_TEMP:-/tmp}/cvd.ready"
+IDP="${RUNNER_TEMP:-/tmp}/cvd.id"
+LOG="${RUNNER_TEMP:-/tmp}/cvd.log"
+rm -f "$READY" "$IDP" "$LOG"
+clang -framework Foundation -framework CoreGraphics -o "$HELPER" create-virtual-display.m \
+  && echo "cvd helper built" || echo "cvd helper build FAILED"
+"$HELPER" --ready-path "$READY" --display-id-path "$IDP" >"$LOG" 2>&1 &
+CVD_PID=$!
+for _ in $(seq 1 100); do
+  { [ -s "$READY" ] && [ -s "$IDP" ]; } && break
+  kill -0 "$CVD_PID" 2>/dev/null || { echo "cvd helper exited early"; break; }
+  sleep 0.1
+done
+echo "--- cvd helper log ---"; cat "$LOG" 2>/dev/null || true
+if [ -s "$IDP" ]; then
+  echo "virtual_display_created=yes id=$(tr -d '\n' < "$IDP")"
+else
+  echo "virtual_display_created=no (CGVirtualDisplay could not be created on this runner)"
+fi
+
+echo "=== AppKit foreground activation probe — WITH virtual display ==="
+"${RUNNER_TEMP:-/tmp}/gui-probe"
+VD_RC=$?
+echo "appkit_with_vdisplay_exit=$VD_RC"
+kill "$CVD_PID" >/dev/null 2>&1 || true
+
+echo "=== VERDICT ==="
+echo "bare_activation_pass=$([ $BARE_RC -eq 0 ] && echo yes || echo no)"
+echo "vdisplay_created=$([ -s "$IDP" ] && echo yes || echo no)"
+echo "activation_with_vdisplay_pass=$([ $VD_RC -eq 0 ] && echo yes || echo no)"
+# Job is GREEN only if the runner can run our real flow: activation works after
+# a virtual display is created (the bare check is informational).
+exit $VD_RC
