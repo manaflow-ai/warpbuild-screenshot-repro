@@ -1,0 +1,22 @@
+name: macos-quota-probe
+on:
+  workflow_dispatch:
+jobs:
+  probe:
+    strategy:
+      fail-fast: false
+      matrix:
+        label:
+          - blacksmith-6vcpu-macos-15
+          - blacksmith-6vcpu-macos-26
+          - blacksmith-6vcpu-macos-latest
+          - blacksmith-12vcpu-macos-15
+          - blacksmith-12vcpu-macos-26
+          - blacksmith-12vcpu-macos-latest
+    runs-on: ${{ matrix.label }}
+    timeout-minutes: 10
+    steps:
+      - run: |
+          echo "ADOPTED label=${{ matrix.label }} host=$(hostname) at $(date -u)"
+          sw_vers || true
+          sysctl -n hw.ncpu || true
