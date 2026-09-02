@@ -1,0 +1,50 @@
+name: validate
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/**
+      - .github/CODEOWNERS
+      - probe.sh
+      - requirements.txt
+      - scripts/**
+      - tests/**
+      - README.md
+      - CONTRIBUTING.md
+      - SECURITY.md
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/**
+      - .github/CODEOWNERS
+      - probe.sh
+      - requirements.txt
+      - scripts/**
+      - tests/**
+      - README.md
+      - CONTRIBUTING.md
+      - SECURITY.md
+
+permissions: {}
+
+concurrency:
+  group: validate-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  static:
+    name: Shell and Python checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout pull request revision
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Check shell syntax
+        run: bash -n probe.sh
+      - name: Run behavior tests
+        run: python3 -m unittest discover -s tests -v

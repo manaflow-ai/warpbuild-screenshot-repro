@@ -33,13 +33,27 @@ Then measure mean pixel brightness for the full image and the body region (exclu
 
 ## Trigger
 
-Push to `main` or run manually:
+Push to protected `main`, or send the trusted repository dispatch event:
 
 ```bash
-gh workflow run repro.yml --repo manaflow-ai/warpbuild-screenshot-repro
+gh api --method POST \
+  repos/manaflow-ai/warpbuild-screenshot-repro/dispatches \
+  -f event_type=run-repro
 ```
 
-Then download the screenshots artifact to compare.
+The dispatch event is evaluated from the protected default branch. The
+workflow rejects other refs and rejects dispatches from actors outside the
+maintainer allowlist (`austinywang`, `azooz2003-bit`, `lawrencecchen`).
+
+The workflow publishes each screenshot as a sanitized Actions artifact. Open
+the issue created for the run, or the workflow summary, to download the two
+artifacts. Artifacts expire after 14 days. The workflow never commits probe
+output to `main`.
+
+The probe removes PNG metadata before upload and logs only hardware and display
+capability fields. Do not open personal applications while a probe is running.
+Screenshots can still contain visible desktop content, so review the image
+before sharing it outside this repository.
 
 ## Suspected root cause
 

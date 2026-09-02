@@ -1,110 +1,223 @@
 name: warpbuild-screenshot-repro
 
+# repository_dispatch always evaluates this workflow from the default branch.
+# It removes the workflow_dispatch branch selector, which could execute a
+# contributor-controlled workflow on the external macOS runner.
 on:
-  workflow_dispatch:
   push:
     branches: [main]
+    paths:
+      - .github/workflows/repro.yml
+      - probe.sh
+      - requirements.txt
+      - scripts/**
+  repository_dispatch:
+    types: [run-repro]
 
-permissions:
-  contents: write
-  issues: write
+# Jobs opt into their exact permissions below. A future job cannot inherit a
+# write token by accident.
+permissions: {}
+
+concurrency:
+  group: screenshot-probe-${{ github.repository }}
+  cancel-in-progress: false
+
+env:
+  PYTHONUNBUFFERED: "1"
 
 jobs:
+  authorize:
+    name: Authorize trusted probe ref
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    outputs:
+      authorized: ${{ steps.policy.outputs.authorized }}
+    steps:
+      - name: Enforce event, ref, and actor policy
+        id: policy
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          REPOSITORY: ${{ github.repository }}
+          WORKFLOW_SHA: ${{ github.sha }}
+          REF_PROTECTED: ${{ github.ref_protected }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          [[ "$REPOSITORY" == "manaflow-ai/warpbuild-screenshot-repro" ]]
+          [[ "$DEFAULT_BRANCH" == "main" ]]
+          [[ "$WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]]
+          expected_ref="refs/heads/${DEFAULT_BRANCH}"
+          if [[ "$REF_NAME" != "$expected_ref" ]]; then
+            echo "Ref is not the protected default branch: $REF_NAME" >&2
+            exit 1
+          fi
+          if [[ "$REF_PROTECTED" != "true" ]]; then
+            echo "The default branch is not protected; refusing to run probes" >&2
+            exit 1
+          fi
+          case "$EVENT_NAME" in
+            push)
+              ;;
+            repository_dispatch)
+              case ",$ACTOR," in
+                *,austinywang,*|*,azooz2003-bit,*|*,lawrencecchen,*)
+                  ;;
+                *)
+                  echo "repository_dispatch is not authorized for actor $ACTOR" >&2
+                  exit 1
+                  ;;
+              esac
+              ;;
+            *)
+              echo "Unsupported event: $EVENT_NAME" >&2
+              exit 1
+              ;;
+          esac
+          printf 'authorized=true\n' >> "$GITHUB_OUTPUT"
+
   warpbuild:
+    name: WarpBuild probe
+    needs: authorize
+    if: needs.authorize.outputs.authorized == 'true'
     runs-on: warp-macos-latest-arm64-6x
     timeout-minutes: 15
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout trusted revision
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
       - name: Run probe.sh (shared script)
-        run: bash probe.sh
-      - uses: actions/upload-artifact@v4
+        id: probe
+        run: bash ./probe.sh
+      - name: Upload sanitized screenshot
         if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: screenshot-${{ github.run_id }}-warpbuild
-          path: /tmp/probe/
+          path: ${{ steps.probe.outputs.output_file }}
+          if-no-files-found: error
+          retention-days: 14
+          include-hidden-files: false
 
   github-hosted-control:
+    name: GitHub-hosted control probe
+    needs: authorize
+    if: needs.authorize.outputs.authorized == 'true'
     runs-on: macos-15
     timeout-minutes: 15
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout trusted revision
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
       - name: Run probe.sh (shared script)
-        run: bash probe.sh
-      - uses: actions/upload-artifact@v4
+        id: probe
+        run: bash ./probe.sh
+      - name: Upload sanitized screenshot
         if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: screenshot-${{ github.run_id }}-macos-15
-          path: /tmp/probe/
+          path: ${{ steps.probe.outputs.output_file }}
+          if-no-files-found: error
+          retention-days: 14
+          include-hidden-files: false
 
   post-issue:
-    runs-on: ubuntu-latest
-    needs: [warpbuild, github-hosted-control]
-    if: always()
+    name: Publish probe report
+    needs: [authorize, warpbuild, github-hosted-control]
+    if: >-
+      always() &&
+      needs.authorize.outputs.authorized == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      issues: write
     steps:
-      - uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Download warpbuild screenshot
-        uses: actions/download-artifact@v4
-        with:
-          name: screenshot-${{ github.run_id }}-warpbuild
-          path: artifacts/warpbuild
-        continue-on-error: true
-
-      - name: Download macos-15 control screenshot
-        uses: actions/download-artifact@v4
-        with:
-          name: screenshot-${{ github.run_id }}-macos-15
-          path: artifacts/macos-15
-        continue-on-error: true
-
-      - name: Commit screenshots into runs/<run_id>/
-        run: |
-          set -euo pipefail
-          RUN_DIR="runs/${{ github.run_id }}"
-          mkdir -p "$RUN_DIR"
-          cp artifacts/warpbuild/desktop.png "$RUN_DIR/warpbuild.png" 2>/dev/null || true
-          cp artifacts/macos-15/desktop.png "$RUN_DIR/macos-15.png" 2>/dev/null || true
-          ls -la "$RUN_DIR"
-          git config user.email "action@github.com"
-          git config user.name "github-actions"
-          git add "$RUN_DIR"
-          if git diff --cached --quiet; then
-            echo "nothing to commit"; exit 0
-          fi
-          git commit -m "screenshots: run ${{ github.run_id }}"
-          for i in 1 2 3 4 5; do
-            git pull --rebase origin main && git push origin main && exit 0
-          done
-          exit 1
-
-      - name: Create issue with inline screenshots
+      - name: Collect artifact links
+        id: artifacts
         env:
           GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          RUNNER_TEMP: ${{ runner.temp }}
         run: |
           set -euo pipefail
-          RUN_ID=${{ github.run_id }}
-          REPO=${{ github.repository }}
-          BASE="https://github.com/${REPO}/raw/main/runs/${RUN_ID}"
-          BODY=$(mktemp)
-          cat > "$BODY" <<MD
-          # Screenshot probe — run \`${RUN_ID}\`
+          [[ "$RUN_ID" =~ ^[0-9]+$ ]]
+          artifacts_json="$RUNNER_TEMP/artifacts.json"
+          gh api \
+            --header 'Accept: application/vnd.github+json' \
+            "repos/${REPOSITORY}/actions/runs/${RUN_ID}/artifacts?per_page=100" \
+            > "$artifacts_json"
+          jq -e '.artifacts | type == "array"' "$artifacts_json" >/dev/null
+          for suffix in warpbuild macos-15; do
+            name="screenshot-${RUN_ID}-${suffix}"
+            matches=$(jq --arg name "$name" '[.artifacts[] | select(.name == $name and .expired == false)] | length' "$artifacts_json")
+            if [[ "$matches" -gt 1 ]]; then
+              echo "More than one active artifact named $name" >&2
+              exit 1
+            fi
+            if [[ "$matches" == 1 ]]; then
+              id=$(jq -r --arg name "$name" '.artifacts[] | select(.name == $name and .expired == false) | .id' "$artifacts_json")
+              [[ "$id" =~ ^[0-9]+$ ]]
+              printf '%s=%s\n' "$suffix" "https://github.com/${REPOSITORY}/actions/runs/${RUN_ID}/artifacts/${id}" >> "$GITHUB_OUTPUT"
+            else
+              printf '%s=%s\n' "$suffix" '' >> "$GITHUB_OUTPUT"
+            fi
+          done
 
-          - Workflow: <https://github.com/${REPO}/actions/runs/${RUN_ID}>
-          - Both jobs run the **identical** shared script: [\`probe.sh\`](https://github.com/${REPO}/blob/main/probe.sh)
-          - Only difference between jobs: \`runs-on:\` label
-
-          ## WarpBuild \`warp-macos-latest-arm64-6x\` (M4 Pro Virtual)
-
-          ![warpbuild](${BASE}/warpbuild.png)
-
-          ## GitHub-hosted \`macos-15\` (control)
-
-          ![macos-15](${BASE}/macos-15.png)
-
-          ---
-          _Auto-posted by [\`repro.yml\`](https://github.com/${REPO}/blob/main/.github/workflows/repro.yml)._
-          MD
-          gh label create probe-run --repo "$REPO" --color BFD4F2 --description "auto-posted by repro" 2>/dev/null || true
-          gh issue create --repo "$REPO" --title "Probe run ${RUN_ID}" --body-file "$BODY" --label probe-run 2>&1 | tail -1
+      - name: Create one idempotent issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          SHA: ${{ github.sha }}
+          WARPBUILD_URL: ${{ steps.artifacts.outputs.warpbuild }}
+          CONTROL_URL: ${{ steps.artifacts.outputs.macos-15 }}
+          RUNNER_TEMP: ${{ runner.temp }}
+        run: |
+          set -euo pipefail
+          [[ "$RUN_ID" =~ ^[0-9]+$ ]]
+          [[ "$SHA" =~ ^[0-9a-f]{40}$ ]]
+          body="$RUNNER_TEMP/probe-issue.md"
+          {
+            printf "# Screenshot probe, run \`%s\`\n\n" "$RUN_ID"
+            printf -- '- Workflow: <https://github.com/%s/actions/runs/%s>\n' "$REPOSITORY" "$RUN_ID"
+            printf -- "- Revision: \`%s\`\n" "$SHA"
+            printf -- "- Both jobs run the identical shared script: [\`probe.sh\`](https://github.com/%s/blob/%s/probe.sh)\n" "$REPOSITORY" "$SHA"
+            printf -- '- Artifacts are retained for 14 days. They are not copied to the repository or exposed through a long-lived URL.\n\n'
+            printf "## WarpBuild \`warp-macos-latest-arm64-6x\`\n\n"
+            if [[ -n "$WARPBUILD_URL" ]]; then
+              printf -- '- [Download the sanitized screenshot artifact](%s)\n\n' "$WARPBUILD_URL"
+            else
+              printf -- '- No artifact was produced because the probe job failed before upload.\n\n'
+            fi
+            printf "## GitHub-hosted \`macos-15\` control\n\n"
+            if [[ -n "$CONTROL_URL" ]]; then
+              printf -- '- [Download the sanitized screenshot artifact](%s)\n\n' "$CONTROL_URL"
+            else
+              printf -- '- No artifact was produced because the control job failed before upload.\n\n'
+            fi
+            printf -- 'The probe strips PNG metadata before upload and grants no repository write token to macOS jobs.\n\n'
+            printf -- "_Auto-posted by [\`repro.yml\`](https://github.com/%s/blob/%s/.github/workflows/repro.yml)._\n" "$REPOSITORY" "$SHA"
+          } > "$body"
+          existing=$(gh issue list --repo "$REPOSITORY" --state all --search "Probe run ${RUN_ID} in:title" --json number --jq '.[0].number // empty')
+          if [[ -n "$existing" ]]; then
+            echo "Issue already exists: https://github.com/${REPOSITORY}/issues/${existing}"
+            exit 0
+          fi
+          issue_url=$(gh issue create --repo "$REPOSITORY" --title "Probe run ${RUN_ID}" --body-file "$body")
+          [[ "$issue_url" =~ ^https://github\.com/[^/]+/[^/]+/issues/[0-9]+$ ]]
+          printf 'Probe issue: %s\n' "$issue_url" >> "$GITHUB_STEP_SUMMARY"

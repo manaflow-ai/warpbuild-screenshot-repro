@@ -1,8 +1,26 @@
 name: macos-quota-probe
+
+# repository_dispatch runs the default-branch workflow only. This prevents a
+# branch-selected workflow from executing arbitrary commands on Blacksmith
+# runners.
 on:
-  workflow_dispatch:
+  repository_dispatch:
+    types: [run-quota-probe]
+
+permissions: {}
+
+concurrency:
+  group: macos-quota-probe-${{ github.repository }}
+  cancel-in-progress: false
+
 jobs:
   probe:
+    if: >-
+      github.repository == 'manaflow-ai/warpbuild-screenshot-repro' &&
+      github.event.repository.default_branch == 'main' &&
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch) &&
+      github.ref_protected == true &&
+      contains(fromJSON('["austinywang","azooz2003-bit","lawrencecchen"]'), github.actor)
     strategy:
       fail-fast: false
       matrix:
@@ -15,6 +33,7 @@ jobs:
           - blacksmith-12vcpu-macos-latest
     runs-on: ${{ matrix.label }}
     timeout-minutes: 10
+    permissions: {}
     steps:
       - run: |
           echo "ADOPTED label=${{ matrix.label }} host=$(hostname) at $(date -u)"
